@@ -1,0 +1,17 @@
+
+# Credenciales
+.env
+.env.*
+!.env.example
+
+# Dependencias
+node_modules/
+
+# Historial antiguo
+git_historial_anterior/
+
+# Archivos generados
+dist/
+build/
+coverage/
+*.log
