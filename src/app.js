@@ -9,6 +9,7 @@ import imagenesRoutes from './Routes/Imagenes.routes.js';
 import PlanRoutes from './Routes/Plan.routes.js';
 
 const app = express();
+app.set('trust proxy', 1);
 
 const corsOptions = {
   origin: '*',
