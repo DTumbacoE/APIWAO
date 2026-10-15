@@ -7,6 +7,7 @@ import negocioRoutes from './Routes/Negocios.routes.js';
 import horariosRoutes from './Routes/Horarios.routes.js';
 import imagenesRoutes from './Routes/Imagenes.routes.js';
 import PlanRoutes from './Routes/Plan.routes.js';
+import RecuperacionRoutes from './Routes/Recuperacion.routes.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -45,6 +46,9 @@ app.use(
     '/api/usuarios/registro',
     '/api/usuarios/login',
     '/api/usuarios/reenviar-verificacion',
+    '/api/recuperacion/recuperar-contrasena',
+    '/api/recuperacion/verificar-codigo',
+    '/api/recuperacion/restablecer-contrasena',
   ],
   authLimiter
 );
@@ -63,6 +67,7 @@ app.use('/api/negocios', negocioRoutes);
 app.use('/api/horarios', horariosRoutes);
 app.use('/api/imagenes', imagenesRoutes);
 app.use('/api/planes', PlanRoutes);
+app.use('/api/recuperacion', RecuperacionRoutes);
 
 // 404
 app.use((req, res) => {

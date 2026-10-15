@@ -22,3 +22,58 @@ export async function enviarVerificacionCorreo({ correo, nombre, enlace }) {
   }
   return respuesta.json();
 }
+
+export async function enviarCodigoRecuperacion({
+  correo,
+  nombre,
+  codigo,
+}) {
+  const apiKey = process.env.BREVO_API_KEY;
+
+  if (!apiKey || !process.env.BREVO_SENDER_EMAIL) {
+    throw new Error('Brevo no está configurado');
+  }
+
+  const respuesta = await fetch(
+    'https://api.brevo.com/v3/smtp/email',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'api-key': apiKey,
+      },
+      body: JSON.stringify({
+        sender: {
+          email: process.env.BREVO_SENDER_EMAIL,
+          name: process.env.BREVO_SENDER_NAME || 'WAO',
+        },
+        to: [{ email: correo }],
+        subject: 'WAO | Recuperación de contraseña',
+        htmlContent: `
+          <div style="font-family:Arial,sans-serif;
+                      max-width:520px;margin:auto;padding:28px">
+            <h1 style="color:#102C54">WAO</h1>
+            <h2>Recupera tu contraseña</h2>
+            <p>Hola, ${String(nombre).replace(/[&<>"']/g, '')}.</p>
+            <p>Utiliza este código para recuperar tu cuenta:</p>
+            <div style="background:#102C54;color:#F5A623;
+                        padding:22px;text-align:center;
+                        font-size:34px;font-weight:bold;
+                        letter-spacing:8px;border-radius:12px">
+              ${codigo}
+            </div>
+            <p>Este código expira en <b>10 minutos</b>.</p>
+            <p>Si no solicitaste el cambio, ignora este mensaje.</p>
+          </div>
+        `,
+      }),
+      signal: AbortSignal.timeout(10000),
+    },
+  );
+
+  if (!respuesta.ok) {
+    throw new Error(
+      `Brevo rechazó el envío: HTTP ${respuesta.status}`,
+    );
+  }
+}
