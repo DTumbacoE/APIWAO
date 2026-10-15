@@ -1,3 +1,5 @@
+import { Router } from 'express';
+
 import {
   solicitarCodigo,
   verificarCodigo,
@@ -7,3 +9,5 @@ import {
 router.post('/recuperar-contrasena', solicitarCodigo);
 router.post('/verificar-codigo', verificarCodigo);
 router.post('/restablecer-contrasena', restablecerContrasena);
+
+export default router;
