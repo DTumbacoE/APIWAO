@@ -165,40 +165,60 @@ export const perfilUsuario = async (req, res) => {
     }
 };
     
-
 export const actualizarContrasena = async (req, res) => {
-
     try {
-
-        const { id_usuario } = req.params;
+        const idSolicitado = Number(req.params.id_usuario);
+        const idAutenticado = Number(req.usuario?.id_usuario);
         const { password } = req.body;
 
-        const password_hash = await bcrypt.hash(
-            password,
-            10
-        );
+        if (!Number.isSafeInteger(idSolicitado) || idSolicitado <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'ID de usuario inválido'
+            });
+        }
 
-        await sql.query(
+        if (idSolicitado !== idAutenticado) {
+            return res.status(403).json({
+                success: false,
+                message: 'No tienes permiso para modificar esta cuenta'
+            });
+        }
+
+        if (typeof password !== 'string' || password.length < 6) {
+            return res.status(400).json({
+                success: false,
+                message: 'La contraseña debe tener al menos 6 caracteres'
+            });
+        }
+
+        const password_hash = await bcrypt.hash(password, 10);
+
+        const [result] = await sql.query(
             `UPDATE Usuarios
-             SET password_hash=?
-             WHERE id_usuario=?`,
-            [
-                password_hash,
-                id_usuario
-            ]
+             SET password_hash = ?
+             WHERE id_usuario = ?`,
+            [password_hash, idAutenticado]
         );
 
-        res.json({
+        if (result.affectedRows === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Usuario no encontrado'
+            });
+        }
+
+        return res.json({
             success: true,
             message: 'Contraseña actualizada'
         });
 
     } catch (error) {
+        console.error('Error al actualizar contraseña:', error);
 
-        res.status(500).json({
+        return res.status(500).json({
             success: false,
-            error: error.message
+            message: 'Error interno del servidor'
         });
-
     }
 };
