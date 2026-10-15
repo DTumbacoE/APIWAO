@@ -32,6 +32,13 @@ const authLimiter = rateLimit({
   },
 });
 
+app.use('/api/usuarios/verificar-correo', (req, res, next) => {
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  next();
+});
+
 // Aplicar el límite únicamente a las operaciones sensibles.
 app.use(
   [
