@@ -4,7 +4,6 @@ import {
   crearUsuario,
   loginUsuario,
   perfilUsuario,
-  actualizarContrasena,
   verificarCorreo,
   reenviarVerificacion
 } from '../Controladores/UsuariosCtrl.js';
@@ -28,11 +27,5 @@ router.get('/validar-token', verificarToken, (req, res) => {
 });
 
 router.get('/perfil', verificarToken, perfilUsuario);
-
-router.put(
-  '/contrasena/:id_usuario',
-  verificarToken,
-  actualizarContrasena
-);
 
 export default router;

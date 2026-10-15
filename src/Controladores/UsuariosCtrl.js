@@ -337,9 +337,18 @@ export const loginUsuario = async (req, res) => {
 
 export const perfilUsuario = async (req, res) => {
     try {
-        const [usuarios] = await sql.query(`SELECT id_usuario, nombre, apellido, correo, telefono, direccion,
-      fecha_registro, id_rol, estado_cuenta, correo_verificado, fecha_verificacion_correo
-      FROM Usuarios WHERE id_usuario = ? AND estado_cuenta = 'activo' AND correo_verificado = 1 LIMIT 1`, [req.usuario.id_usuario]);
+        const [usuarios] = await sql.query(
+            `SELECT id_usuario, nombre, apellido, correo, telefono,
+          direccion, foto_perfil_url, fecha_registro,
+          id_rol, estado_cuenta, correo_verificado,
+          fecha_verificacion_correo
+   FROM Usuarios
+   WHERE id_usuario = ?
+     AND estado_cuenta = 'activo'
+     AND correo_verificado = 1
+   LIMIT 1`,
+            [req.usuario.id_usuario]
+        );
         if (!usuarios.length) return res.status(403).json({ success: false, message: 'Cuenta no disponible' });
         return res.json(usuarios[0]);
     } catch (error) {
@@ -348,21 +357,4 @@ export const perfilUsuario = async (req, res) => {
     }
 };
 
-export const actualizarContrasena = async (req, res) => {
-    try {
-        const idSolicitado = Number(req.params.id_usuario);
-        const idAutenticado = Number(req.usuario?.id_usuario);
-        const { password } = req.body || {};
-        if (!Number.isSafeInteger(idSolicitado) || idSolicitado <= 0) return res.status(400).json({ success: false, message: 'ID de usuario inválido' });
-        if (idSolicitado !== idAutenticado) return res.status(403).json({ success: false, message: 'No tienes permiso para modificar esta cuenta' });
-        if (typeof password !== 'string' || password.length < 8) return res.status(400).json({ success: false, message: 'La contraseña debe tener al menos 8 caracteres' });
-        const passwordHash = await bcrypt.hash(password, 12);
-        const [result] = await sql.query(`UPDATE Usuarios SET password_hash = ?
-      WHERE id_usuario = ? AND estado_cuenta = 'activo' AND correo_verificado = 1`, [passwordHash, idAutenticado]);
-        if (!result.affectedRows) return res.status(403).json({ success: false, message: 'Cuenta no disponible' });
-        return res.json({ success: true, message: 'Contraseña actualizada' });
-    } catch (error) {
-        console.error('Error al actualizar contraseña:', error);
-        return res.status(500).json({ success: false, message: 'Error interno del servidor' });
-    }
-};
+
