@@ -5,7 +5,15 @@ import { sql } from '../bd.js';
 import { enviarVerificacionCorreo } from '../Services/CorreoService.js';
 
 const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
-const correoValido = (correo) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo) && correo.length <= 150;
+const correoValido = (correo) => {
+    if (typeof correo !== 'string') return false;
+
+    const email = correo.trim().toLowerCase();
+
+    if (email.length > 150) return false;
+
+    return /^[a-zA-Z0-9._%+-]+@(gmail\.com|hotmail\.com)$/.test(email);
+};
 const normalizarCorreo = (correo) => typeof correo === 'string' ? correo.trim().toLowerCase() : '';
 const baseUrl = () => process.env.PUBLIC_API_URL?.replace(/\/$/, '') || '';
 
@@ -315,24 +323,49 @@ export const reenviarVerificacion = async (req, res) => {
 };
 
 export const loginUsuario = async (req, res) => {
-    try {
-        const correo = normalizarCorreo(req.body?.correo);
-        const password = req.body?.password;
-        if (!correoValido(correo) || typeof password !== 'string') return res.status(400).json({ success: false, message: 'Credenciales inválidas' });
-        const [usuarios] = await sql.query('SELECT * FROM Usuarios WHERE correo = ? LIMIT 1', [correo]);
-        if (!usuarios.length || !(await bcrypt.compare(password, usuarios[0].password_hash))) {
-            return res.status(401).json({ success: false, message: 'Correo o contraseña incorrectos' });
-        }
-        const usuario = usuarios[0];
-        if (usuario.estado_cuenta !== 'activo') return res.status(403).json({ success: false, message: 'Esta cuenta no está activa' });
-        if (!usuario.correo_verificado) return res.status(403).json({ success: false, codigo: 'CORREO_NO_VERIFICADO', message: 'Debes verificar tu correo antes de iniciar sesión' });
-        const token = jwt.sign({ id_usuario: usuario.id_usuario, correo: usuario.correo, id_rol: usuario.id_rol }, process.env.JWT_SECRET, { expiresIn: '30d' });
-        delete usuario.password_hash;
-        return res.json({ success: true, token, usuario });
-    } catch (error) {
-        console.error('Error en login:', error);
-        return res.status(500).json({ success: false, message: 'Error interno del servidor' });
+  try {
+    const correo = normalizarCorreo(req.body?.correo);
+    const password = req.body?.password;
+
+    const resultado = await autenticarCredenciales(correo, password);
+
+    if (resultado.error) {
+      return res.status(resultado.estado).json({
+        success: false,
+        message: resultado.error,
+        ...(resultado.codigo ? { codigo: resultado.codigo } : {})
+      });
     }
+
+    const usuario = resultado.usuario;
+
+    const token = jwt.sign(
+      {
+        id_usuario: usuario.id_usuario,
+        correo: usuario.correo,
+        id_rol: usuario.id_rol,
+        tipo_sesion: 'movil'
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: '30d' }
+    );
+
+    res.setHeader('Cache-Control', 'no-store');
+
+    return res.status(200).json({
+      success: true,
+      token,
+      usuario
+    });
+
+  } catch (error) {
+    console.error('Error en login:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
 };
 
 export const perfilUsuario = async (req, res) => {
@@ -354,6 +387,189 @@ export const perfilUsuario = async (req, res) => {
     } catch (error) {
         console.error('Error en perfil:', error);
         return res.status(500).json({ success: false, message: 'Error interno del servidor' });
+    }
+};
+const autenticarCredenciales = async (correo, password) => {
+    if (!correoValido(correo) || typeof password !== 'string') {
+        return { error: 'Credenciales inválidas', estado: 400 };
+    }
+
+    const [usuarios] = await sql.query(
+        'SELECT * FROM Usuarios WHERE correo = ? LIMIT 1',
+        [correo]
+    );
+
+    if (
+        !usuarios.length ||
+        !(await bcrypt.compare(password, usuarios[0].password_hash))
+    ) {
+        return { error: 'Correo o contraseña incorrectos', estado: 401 };
+    }
+
+    const usuario = usuarios[0];
+
+    if (usuario.estado_cuenta !== 'activo') {
+        return { error: 'Esta cuenta no está activa', estado: 403 };
+    }
+
+    if (!usuario.correo_verificado) {
+        return {
+            error: 'Debes verificar tu correo antes de iniciar sesión',
+            estado: 403,
+            codigo: 'CORREO_NO_VERIFICADO'
+        };
+    }
+
+    delete usuario.password_hash;
+
+    return { usuario };
+};
+
+export const loginUsuarioWeb = async (req, res) => {
+    try {
+        const correo = normalizarCorreo(req.body?.correo);
+        const password = req.body?.password;
+
+        // 1. Validar las credenciales del usuario
+        const resultado = await autenticarCredenciales(
+            correo,
+            password
+        );
+
+        if (resultado.error) {
+            return res.status(resultado.estado).json({
+                success: false,
+                message: resultado.error,
+                ...(resultado.codigo
+                    ? { codigo: resultado.codigo }
+                    : {})
+            });
+        }
+
+        const usuario = resultado.usuario;
+
+        // 2. Generar identificador único de sesión
+        const jti = crypto.randomUUID();
+        const jtiHash = hashToken(jti);
+
+        // 3. Establecer duración de la sesión: 24 horas
+        const duracionSesion = 24 * 60 * 60 * 1000;
+
+        const fechaExpiracion = new Date(
+            Date.now() + duracionSesion
+        );
+
+        // 4. Generar JWT para la sesión web
+        const token = jwt.sign(
+            {
+                id_usuario: usuario.id_usuario,
+                correo: usuario.correo,
+                id_rol: usuario.id_rol,
+                tipo_sesion: 'web'
+            },
+            process.env.JWT_SECRET,
+            {
+                expiresIn: '24h',
+                jwtid: jti
+            }
+        );
+
+        // 5. Registrar sesión en MySQL
+        await sql.query(
+            `INSERT INTO SesionesWeb
+                (id_usuario, jti_hash, fecha_expiracion)
+             VALUES (?, ?, ?)`,
+            [
+                usuario.id_usuario,
+                jtiHash,
+                fechaExpiracion
+            ]
+        );
+
+        // 6. Enviar JWT mediante cookie HttpOnly
+        res.cookie('wao_session', token, {
+            httpOnly: true,
+            secure: true,
+            sameSite: 'none',
+            path: '/',
+            maxAge: duracionSesion
+        });
+
+        // 7. Evitar almacenamiento en caché
+        res.setHeader('Cache-Control', 'no-store');
+
+        // 8. Responder sin exponer el JWT
+        return res.status(200).json({
+            success: true,
+            message: 'Inicio de sesión exitoso',
+            usuario
+        });
+
+    } catch (error) {
+        console.error('Error en login web:', error);
+
+        return res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor'
+        });
+    }
+};
+
+
+export const logoutUsuarioWeb = async (req, res) => {
+    try {
+        // 1. Verificar que la autenticación sea web
+        if (!req.sesionWeb?.id_sesion) {
+            return res.status(401).json({
+                success: false,
+                message: 'No existe una sesión web válida'
+            });
+        }
+
+        // 2. Revocar la sesión en MySQL
+        const [resultado] = await sql.query(
+            `UPDATE SesionesWeb
+             SET fecha_revocacion = UTC_TIMESTAMP()
+             WHERE id_sesion = ?
+               AND id_usuario = ?
+               AND fecha_revocacion IS NULL`,
+            [
+                req.sesionWeb.id_sesion,
+                req.usuario.id_usuario
+            ]
+        );
+
+        if (resultado.affectedRows !== 1) {
+            return res.status(401).json({
+                success: false,
+                message: 'La sesión ya no está activa'
+            });
+        }
+
+        // 3. Eliminar la cookie HttpOnly
+        res.clearCookie('wao_session', {
+            httpOnly: true,
+            secure: true,
+            sameSite: 'none',
+            path: '/'
+        });
+
+        // 4. Evitar almacenamiento en caché
+        res.setHeader('Cache-Control', 'no-store');
+
+        // 5. Confirmar cierre de sesión
+        return res.status(200).json({
+            success: true,
+            message: 'Sesión cerrada correctamente'
+        });
+
+    } catch (error) {
+        console.error('Error cerrando sesión web:', error);
+
+        return res.status(500).json({
+            success: false,
+            message: 'Error interno del servidor'
+        });
     }
 };
 
