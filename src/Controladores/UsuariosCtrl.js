@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { sql } from '../bd.js';
 import { enviarVerificacionCorreo } from '../Services/CorreoService.js';
 import { validarRegistro } from '../validaciones/validarRegistro.js';
-
+import { generarHuellaMovil } from '../middlewares/auth.js';
 // ============================================================
 // UTILIDADES
 // ============================================================
@@ -572,9 +572,13 @@ const autenticarCredenciales = async (correo, password) => {
 // LOGIN ANDROID / MÓVIL
 // ============================================================
 
+
 export const loginUsuario = async (req, res) => {
   try {
-    const correo = normalizarCorreo(req.body?.correo);
+    const correo = normalizarCorreo(
+      req.body?.correo
+    );
+
     const password = req.body?.password;
 
     const resultado = await autenticarCredenciales(
@@ -594,15 +598,42 @@ export const loginUsuario = async (req, res) => {
 
     const usuario = resultado.usuario;
 
+    // Obtener el hash actual desde MySQL.
+    const [filas] = await sql.query(
+      `SELECT password_hash
+             FROM Usuarios
+             WHERE id_usuario = ?
+               AND estado_cuenta = 'activo'
+               AND correo_verificado = 1
+             LIMIT 1`,
+      [usuario.id_usuario]
+    );
+
+    if (!filas.length) {
+      return res.status(401).json({
+        success: false,
+        message: 'Cuenta no disponible'
+      });
+    }
+
+    const huellaSesion = generarHuellaMovil(
+      usuario.id_usuario,
+      filas[0].password_hash
+    );
+
     const token = jwt.sign(
       {
         id_usuario: usuario.id_usuario,
         correo: usuario.correo,
         id_rol: usuario.id_rol,
-        tipo_sesion: 'movil'
+        tipo_sesion: 'movil',
+        huella_sesion: huellaSesion
       },
       process.env.JWT_SECRET,
-      { expiresIn: '30d' }
+      {
+        algorithm: 'HS256',
+        expiresIn: '30d'
+      }
     );
 
     res.setHeader('Cache-Control', 'no-store');
@@ -614,7 +645,7 @@ export const loginUsuario = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error en login:', error);
+    console.error('Error en login móvil:', error);
 
     return res.status(500).json({
       success: false,
@@ -622,6 +653,7 @@ export const loginUsuario = async (req, res) => {
     });
   }
 };
+
 
 // ============================================================
 // PERFIL DEL USUARIO

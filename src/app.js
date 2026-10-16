@@ -14,19 +14,58 @@ import PerfilRoutes from './Routes/Perfil.routes.js';
 
 const app = express();
 
-// Railway utiliza un proxy delante del servidor.
+// ============================================================
+// 1. CONFIGURACIÓN DE RAILWAY
+// ============================================================
+
+// Railway utiliza un proxy delante de Node.js.
+// Verificar que este valor corresponda al despliegue real.
 app.set('trust proxy', 1);
 
-// URL exacta del frontend autorizado, sin barra final.
-const frontendPermitido = process.env.FRONTEND_URL;
+// Evitar exponer la tecnología del servidor.
+app.disable('x-powered-by');
 
+// ============================================================
+// 2. CONFIGURACIÓN DEL FRONTEND AUTORIZADO
+// ============================================================
 
-// Configuración de CORS.
+const obtenerOrigenFrontend = () => {
+  try {
+    const url = new URL(process.env.FRONTEND_URL);
+
+    if (url.protocol !== 'https:') {
+      return null;
+    }
+
+    return url.origin;
+  } catch {
+    return null;
+  }
+};
+
+const frontendPermitido = obtenerOrigenFrontend();
+
+if (!frontendPermitido) {
+  console.warn(
+    'ADVERTENCIA: FRONTEND_URL no está configurada ' +
+    'correctamente. El acceso web estará restringido.'
+  );
+}
+
+// ============================================================
+// 3. CONFIGURACIÓN CORS
+// ============================================================
+
 const corsOptions = {
   origin: (origin, callback) => {
-    // Permitir clientes sin Origin, como aplicaciones móviles.
-    // Las rutas web sensibles tienen una validación adicional.
-    if (!origin || origin === frontendPermitido) {
+    // Los clientes sin Origin, como algunos clientes móviles
+    // o herramientas HTTP, pueden realizar solicitudes.
+    // La autenticación sigue siendo obligatoria donde aplique.
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    if (frontendPermitido && origin === frontendPermitido) {
       return callback(null, true);
     }
 
@@ -50,34 +89,40 @@ const corsOptions = {
     'X-CSRF-Token'
   ],
 
-  credentials: true
+  credentials: true,
+
+  optionsSuccessStatus: 204
 };
 
 app.use(cors(corsOptions));
 
-// Leer cookies enviadas por el navegador.
+// ============================================================
+// 4. PARSEO DE COOKIES Y JSON
+// ============================================================
+
 app.use(cookieParser());
 
-// Limitar el tamaño de las solicitudes JSON.
 app.use(express.json({
   limit: '100kb'
 }));
 
-// Evitar almacenar respuestas de autenticación.
+// ============================================================
+// 5. PROTECCIÓN DEL LOGIN WEB
+// ============================================================
+
+// El login web establece una cookie HttpOnly.
+// Por eso se comprueba el Origin antes de permitir el login.
+
 app.use('/api/usuarios/login-web', (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
-  next();
-});
 
-// Protección adicional contra login CSRF.
-app.use('/api/usuarios/login-web', (req, res, next) => {
   if (req.method !== 'POST') {
     return next();
   }
 
   const origen = req.get('Origin');
 
-  if (origen !== frontendPermitido) {
+  if (!frontendPermitido || origen !== frontendPermitido) {
     return res.status(403).json({
       success: false,
       message: 'Origen no autorizado'
@@ -87,32 +132,63 @@ app.use('/api/usuarios/login-web', (req, res, next) => {
   next();
 });
 
-// Limitar intentos en endpoints sensibles.
-const authLimiter = rateLimit({
+// ============================================================
+// 6. LIMITADOR DE INTENTOS DE LOGIN
+// ============================================================
+
+const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: 30,
+
+  // Máximo de 10 solicitudes fallidas por ventana.
+  limit: 10,
+
+  // Las respuestas exitosas no consumen el límite.
+  skipSuccessfulRequests: true,
+
   standardHeaders: 'draft-8',
   legacyHeaders: false,
+
   message: {
     success: false,
-    message: 'Demasiadas solicitudes. Intenta nuevamente más tarde.'
+    message:
+      'Demasiados intentos de inicio de sesión. ' +
+      'Inténtalo nuevamente más tarde.'
   }
 });
 
-// Cabeceras de seguridad para verificación de correo.
-app.use('/api/usuarios/verificar-correo', (req, res, next) => {
-  res.setHeader('Referrer-Policy', 'no-referrer');
-  res.setHeader('Cache-Control', 'no-store');
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  next();
+// ============================================================
+// 7. LIMITADOR PARA OTRAS OPERACIONES SENSIBLES
+// ============================================================
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+
+  limit: 30,
+
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+
+  message: {
+    success: false,
+    message:
+      'Demasiadas solicitudes. ' +
+      'Inténtalo nuevamente más tarde.'
+  }
 });
 
-// Rate limiting.
+// Aplicar límite específico a ambos tipos de login.
+app.use(
+  [
+    '/api/usuarios/login',
+    '/api/usuarios/login-web'
+  ],
+  loginLimiter
+);
+
+// Aplicar límite a otras operaciones sensibles.
 app.use(
   [
     '/api/usuarios/registro',
-    '/api/usuarios/login',
-    '/api/usuarios/login-web',
     '/api/usuarios/reenviar-verificacion',
     '/api/recuperacion/recuperar-contrasena',
     '/api/recuperacion/verificar-codigo',
@@ -122,14 +198,48 @@ app.use(
   authLimiter
 );
 
-// Ruta principal.
+// ============================================================
+// 8. CABECERAS DE SEGURIDAD
+// ============================================================
+
+// Evitar almacenar respuestas de autenticación.
+app.use(
+  [
+    '/api/usuarios/login',
+    '/api/usuarios/login-web',
+    '/api/usuarios/logout-web',
+    '/api/usuarios/validar-token',
+    '/api/usuarios/perfil'
+  ],
+  (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  }
+);
+
+// Cabeceras para el enlace de verificación de correo.
+app.use('/api/usuarios/verificar-correo', (req, res, next) => {
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  next();
+});
+
+// ============================================================
+// 9. RUTA PRINCIPAL
+// ============================================================
+
 app.get('/', (req, res) => {
-  return res.json({
+  return res.status(200).json({
     success: true,
     proyecto: 'WAO API',
     version: '1.0.0'
   });
 });
+
+// ============================================================
+// 10. RUTAS DE LA API
+// ============================================================
 
 // Usuarios y autenticación.
 app.use('/api/usuarios', usuariosRoutes);
@@ -149,10 +259,13 @@ app.use('/api/planes', PlanRoutes);
 // Recuperación de contraseña.
 app.use('/api/recuperacion', RecuperacionRoutes);
 
-// Configuración de cuenta y fotos de perfil.
+// Perfil y configuración de cuenta.
 app.use('/api/perfil', PerfilRoutes);
 
-// Ruta no encontrada.
+// ============================================================
+// 11. RUTA NO ENCONTRADA
+// ============================================================
+
 app.use((req, res) => {
   return res.status(404).json({
     success: false,
@@ -160,10 +273,42 @@ app.use((req, res) => {
   });
 });
 
-// Manejo centralizado de errores.
+// ============================================================
+// 12. MANEJO CENTRALIZADO DE ERRORES
+// ============================================================
+
 app.use((err, req, res, next) => {
   console.error('Error en API:', err);
 
+  // Solicitud JSON malformada.
+  if (
+    err instanceof SyntaxError &&
+    err.status === 400 &&
+    'body' in err
+  ) {
+    return res.status(400).json({
+      success: false,
+      message: 'El formato JSON enviado es inválido'
+    });
+  }
+
+  // Solicitud demasiado grande.
+  if (err.status === 413) {
+    return res.status(413).json({
+      success: false,
+      message: 'El contenido enviado supera el tamaño permitido'
+    });
+  }
+
+  // Origen no permitido por CORS.
+  if (err.message === 'Origen no permitido por CORS') {
+    return res.status(403).json({
+      success: false,
+      message: 'Origen no autorizado'
+    });
+  }
+
+  // Cualquier otro error.
   return res.status(500).json({
     success: false,
     message: 'Error interno del servidor'

@@ -15,14 +15,16 @@ import { verificarToken } from '../middlewares/auth.js';
 
 const router = Router();
 
+// Registro de usuarios
 router.post('/registro', crearUsuario);
 
-// Login tradicional para clientes que usan Bearer
+// Login móvil mediante JWT Bearer
 router.post('/login', loginUsuario);
 
-// Login exclusivo de Flutter Web con cookie HttpOnly
+// Login web mediante cookie HttpOnly
 router.post('/login-web', loginUsuarioWeb);
 
+// Cierre de sesión web
 router.post(
   '/logout-web',
   verificarToken,
@@ -39,9 +41,13 @@ router.post(
   logoutUsuarioWeb
 );
 
+// Verificación de correo
 router.get('/verificar-correo', verificarCorreo);
+
+// Reenvío de verificación
 router.post('/reenviar-verificacion', reenviarVerificacion);
 
+// Validación de sesión
 router.get('/validar-token', verificarToken, (req, res) => {
   return res.status(200).json({
     success: true,
@@ -50,6 +56,7 @@ router.get('/validar-token', verificarToken, (req, res) => {
   });
 });
 
+// Perfil del usuario autenticado
 router.get('/perfil', verificarToken, perfilUsuario);
 
 export default router;

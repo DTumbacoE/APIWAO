@@ -1,106 +1,466 @@
+
 import bcrypt from 'bcrypt';
 import { sql } from '../bd.js';
-import { subirFotoPerfil, eliminarFotoPerfil } from '../Services/Cloudinary.js';
+
+import {
+    subirFotoPerfil,
+    eliminarFotoPerfil
+} from '../Services/Cloudinary.js';
+
 import { fileTypeFromBuffer } from 'file-type';
 
+// ============================================================
+// UTILIDADES
+// ============================================================
+
 const idDe = (req) => req.usuario.id_usuario;
-const limpiar = (v, max, requerido = false) => {
-  if (typeof v !== 'string') return null;
-  const s = v.trim();
-  if ((requerido && !s) || s.length > max) return null;
-  return s;
+
+const limpiar = (valor, maximo, requerido = false) => {
+    if (typeof valor !== 'string') return null;
+
+    const texto = valor.trim();
+
+    if ((requerido && !texto) || texto.length > maximo) {
+        return null;
+    }
+
+    return texto;
 };
+
+const errorServidor = (res, contexto, error) => {
+    console.error(contexto, error);
+
+    return res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+    });
+};
+
+const eliminarEnSegundoPlano = (publicId) => {
+    if (!publicId) return;
+
+    eliminarFotoPerfil(publicId).catch((error) => {
+        console.error('No se pudo eliminar imagen antigua:', error);
+    });
+};
+
+// ============================================================
+// EDITAR PERFIL
+// ============================================================
 
 export const editarPerfil = async (req, res) => {
-  const body = req.body ?? {};
-  const permitidos = ['nombre', 'apellido', 'telefono', 'direccion'];
-  if (Object.keys(body).some(k => !permitidos.includes(k))) {
-    return res.status(400).json({ success: false, message: 'Solo puedes modificar nombre, apellido, teléfono y dirección' });
-  }
-  if (!permitidos.some(k => Object.hasOwn(body, k))) {
-    return res.status(400).json({ success: false, message: 'No se enviaron cambios' });
-  }
-  const campos = [];
-  const valores = [];
-  for (const [key, max, requerido] of [['nombre', 100, true], ['apellido', 100, true], ['telefono', 20, false], ['direccion', 255, false]]) {
-    if (!Object.hasOwn(body, key)) continue;
-    const valor = limpiar(body[key], max, requerido);
-    if (valor === null) return res.status(400).json({ success: false, message: `Campo ${key} inválido` });
-    campos.push(`${key} = ?`);
-    valores.push(valor || null);
-  }
-  try {
-    await sql.query(`UPDATE Usuarios SET ${campos.join(', ')} WHERE id_usuario = ?`, [...valores, idDe(req)]);
-    const [rows] = await sql.query('SELECT id_usuario, nombre, apellido, correo, telefono, direccion, foto_perfil_url, id_rol FROM Usuarios WHERE id_usuario = ?', [idDe(req)]);
-    return res.json({ success: true, usuario: rows[0] });
-  } catch (e) {
-    console.error('Editar perfil:', e);
-    return res.status(500).json({ success: false, message: 'No se pudo actualizar el perfil' });
-  }
+    const body = req.body ?? {};
+
+    const permitidos = [
+        'nombre',
+        'apellido',
+        'telefono',
+        'direccion'
+    ];
+
+    if (
+        typeof body !== 'object' ||
+        Array.isArray(body) ||
+        Object.keys(body).some(
+            (campo) => !permitidos.includes(campo)
+        )
+    ) {
+        return res.status(400).json({
+            success: false,
+            message: 'Se enviaron campos no permitidos'
+        });
+    }
+
+    if (
+        !permitidos.some(
+            (campo) => Object.hasOwn(body, campo)
+        )
+    ) {
+        return res.status(400).json({
+            success: false,
+            message: 'No se enviaron cambios'
+        });
+    }
+
+    const campos = [];
+    const valores = [];
+
+    const definiciones = [
+        ['nombre', 100, true],
+        ['apellido', 100, true],
+        ['telefono', 20, false],
+        ['direccion', 255, false]
+    ];
+
+    for (const [campo, maximo, requerido] of definiciones) {
+        if (!Object.hasOwn(body, campo)) continue;
+
+        const valor = limpiar(body[campo], maximo, requerido);
+
+        if (valor === null) {
+            return res.status(400).json({
+                success: false,
+                message: `Campo ${campo} inválido`
+            });
+        }
+
+        campos.push(`${campo} = ?`);
+        valores.push(valor || null);
+    }
+
+    try {
+        const [resultado] = await sql.query(
+            `UPDATE Usuarios
+             SET ${campos.join(', ')}
+             WHERE id_usuario = ?
+               AND estado_cuenta = 'activo'
+               AND correo_verificado = 1`,
+            [...valores, idDe(req)]
+        );
+
+        if (resultado.affectedRows === 0) {
+            return res.status(403).json({
+                success: false,
+                message: 'Cuenta no disponible'
+            });
+        }
+
+        const [usuarios] = await sql.query(
+            `SELECT
+                id_usuario,
+                nombre,
+                apellido,
+                correo,
+                telefono,
+                direccion,
+                foto_perfil_url,
+                id_rol
+             FROM Usuarios
+             WHERE id_usuario = ?
+               AND estado_cuenta = 'activo'
+             LIMIT 1`,
+            [idDe(req)]
+        );
+
+        res.setHeader('Cache-Control', 'no-store');
+
+        return res.json({
+            success: true,
+            usuario: usuarios[0]
+        });
+
+    } catch (error) {
+        return errorServidor(res, 'Editar perfil:', error);
+    }
 };
+
+// ============================================================
+// CAMBIAR CONTRASEÑA
+// ============================================================
 
 export const cambiarContrasenaSegura = async (req, res) => {
-  const { contrasenaActual, contrasenaNueva } = req.body ?? {};
-  if (typeof contrasenaActual !== 'string' || typeof contrasenaNueva !== 'string' ||
-    contrasenaNueva.length < 12 || contrasenaNueva.length > 128 || contrasenaNueva === contrasenaActual) {
-    return res.status(400).json({ success: false, message: 'La nueva contraseña debe tener entre 12 y 128 caracteres y ser diferente de la actual' });
-  }
-  try {
-    const [rows] = await sql.query('SELECT password_hash FROM Usuarios WHERE id_usuario = ?', [idDe(req)]);
-    if (!rows.length || !await bcrypt.compare(contrasenaActual, rows[0].password_hash)) {
-      return res.status(401).json({ success: false, message: 'Contraseña actual incorrecta' });
+    const {
+        contrasenaActual,
+        contrasenaNueva
+    } = req.body ?? {};
+
+    if (
+        typeof contrasenaActual !== 'string' ||
+        typeof contrasenaNueva !== 'string' ||
+        contrasenaNueva.length < 12 ||
+        contrasenaNueva.length > 128 ||
+        contrasenaNueva === contrasenaActual
+    ) {
+        return res.status(400).json({
+            success: false,
+            message:
+                'La nueva contraseña debe tener entre 12 y ' +
+                '128 caracteres y ser diferente de la actual'
+        });
     }
-    const hash = await bcrypt.hash(contrasenaNueva, 12);
-    await sql.query('UPDATE Usuarios SET password_hash = ? WHERE id_usuario = ?', [hash, idDe(req)]);
-    return res.json({ success: true, message: 'Contraseña actualizada' });
-  } catch (e) {
-    console.error('Cambiar contraseña:', e);
-    return res.status(500).json({ success: false, message: 'No se pudo cambiar la contraseña' });
-  }
+
+    let conn;
+
+    try {
+        conn = await sql.getConnection();
+        await conn.beginTransaction();
+
+        const [usuarios] = await conn.query(
+            `SELECT password_hash
+             FROM Usuarios
+             WHERE id_usuario = ?
+               AND estado_cuenta = 'activo'
+               AND correo_verificado = 1
+             LIMIT 1
+             FOR UPDATE`,
+            [idDe(req)]
+        );
+
+        if (
+            !usuarios.length ||
+            !(await bcrypt.compare(
+                contrasenaActual,
+                usuarios[0].password_hash
+            ))
+        ) {
+            await conn.rollback();
+
+            return res.status(401).json({
+                success: false,
+                message: 'Contraseña actual incorrecta'
+            });
+        }
+
+        const nuevoHash = await bcrypt.hash(
+            contrasenaNueva,
+            12
+        );
+
+        await conn.query(
+            `UPDATE Usuarios
+             SET password_hash = ?
+             WHERE id_usuario = ?`,
+            [nuevoHash, idDe(req)]
+        );
+
+        await conn.query(
+            `UPDATE SesionesWeb
+             SET fecha_revocacion = UTC_TIMESTAMP()
+             WHERE id_usuario = ?
+               AND fecha_revocacion IS NULL`,
+            [idDe(req)]
+        );
+
+        await conn.commit();
+
+        res.clearCookie('wao_session', {
+            httpOnly: true,
+            secure: true,
+            sameSite: 'none',
+            path: '/'
+        });
+
+        res.setHeader('Cache-Control', 'no-store');
+
+        return res.json({
+            success: true,
+            message:
+                'Contraseña actualizada. Inicia sesión nuevamente.'
+        });
+
+    } catch (error) {
+        if (conn) {
+            try {
+                await conn.rollback();
+            } catch (e) {
+                console.error('Error rollback:', e);
+            }
+        }
+
+        return errorServidor(res, 'Cambiar contraseña:', error);
+
+    } finally {
+        if (conn) conn.release();
+    }
 };
+
+// ============================================================
+// SUBIR O REEMPLAZAR FOTO DE PERFIL
+// ============================================================
 
 export const subirFoto = async (req, res) => {
-  if (!req.file) return res.status(400).json({ success: false, message: 'Selecciona una imagen JPG, PNG o WebP de hasta 5 MB' });
-  const tipoReal = await fileTypeFromBuffer(req.file.buffer);
+    if (
+        !req.file ||
+        !Buffer.isBuffer(req.file.buffer) ||
+        req.file.buffer.length === 0 ||
+        req.file.buffer.length > 5 * 1024 * 1024
+    ) {
+        return res.status(400).json({
+            success: false,
+            message:
+                'Selecciona una imagen JPG, PNG o WebP de hasta 5 MB'
+        });
+    }
 
-  const formatosPermitidos = [
-    'image/jpeg',
-    'image/png',
-    'image/webp',
-  ];
+    let nueva = null;
+    let guardada = false;
 
-  if (!tipoReal || !formatosPermitidos.includes(tipoReal.mime)) {
-    return res.status(400).json({
-      success: false,
-      message: 'El archivo no es una imagen JPG, PNG o WebP válida',
-    });
-  }
-  let nueva;
-  try {
-    const [rows] = await sql.query('SELECT foto_perfil_public_id FROM Usuarios WHERE id_usuario = ?', [idDe(req)]);
-    if (!rows.length) return res.status(404).json({ success: false, message: 'Usuario no encontrado' });
-    const anterior = rows[0].foto_perfil_public_id;
-    nueva = await subirFotoPerfil(req.file.buffer, idDe(req));
-    await sql.query('UPDATE Usuarios SET foto_perfil_url = ?, foto_perfil_public_id = ? WHERE id_usuario = ?', [nueva.url, nueva.publicId, idDe(req)]);
-    if (anterior) eliminarFotoPerfil(anterior).catch(e => console.error('No se eliminó foto anterior:', e));
-    return res.json({ success: true, foto_perfil_url: nueva.url });
-  } catch (e) {
-    if (nueva) await eliminarFotoPerfil(nueva.publicId).catch(() => { });
-    console.error('Subir foto:', e);
-    return res.status(500).json({ success: false, message: 'No se pudo guardar la foto' });
-  }
+    try {
+        const tipoReal = await fileTypeFromBuffer(
+            req.file.buffer
+        );
+
+        const permitidos = new Set([
+            'image/jpeg',
+            'image/png',
+            'image/webp'
+        ]);
+
+        if (!tipoReal || !permitidos.has(tipoReal.mime)) {
+            return res.status(400).json({
+                success: false,
+                message: 'El archivo no es una imagen válida'
+            });
+        }
+
+        if (req.file.mimetype !== tipoReal.mime) {
+            return res.status(400).json({
+                success: false,
+                message: 'El formato declarado no coincide con la imagen'
+            });
+        }
+
+        const [usuarios] = await sql.query(
+            `SELECT foto_perfil_public_id
+             FROM Usuarios
+             WHERE id_usuario = ?
+               AND estado_cuenta = 'activo'
+               AND correo_verificado = 1
+             LIMIT 1`,
+            [idDe(req)]
+        );
+
+        if (!usuarios.length) {
+            return res.status(404).json({
+                success: false,
+                message: 'Usuario no encontrado'
+            });
+        }
+
+        const anterior = usuarios[0].foto_perfil_public_id;
+
+        nueva = await subirFotoPerfil(
+            req.file.buffer,
+            idDe(req)
+        );
+
+        // Actualización condicional:
+        // solo cambia la foto si nadie la modificó antes.
+        const [resultado] = await sql.query(
+            `UPDATE Usuarios
+             SET foto_perfil_url = ?,
+                 foto_perfil_public_id = ?
+             WHERE id_usuario = ?
+               AND estado_cuenta = 'activo'
+               AND correo_verificado = 1
+               AND foto_perfil_public_id <=> ?`,
+            [
+                nueva.url,
+                nueva.publicId,
+                idDe(req),
+                anterior
+            ]
+        );
+
+        if (resultado.affectedRows !== 1) {
+            await eliminarFotoPerfil(nueva.publicId)
+                .catch((error) => {
+                    console.error(
+                        'No se pudo limpiar la foto nueva:',
+                        error
+                    );
+                });
+
+            nueva = null;
+
+            return res.status(409).json({
+                success: false,
+                message:
+                    'La fotografía cambió durante la operación. ' +
+                    'Inténtalo nuevamente.'
+            });
+        }
+
+        guardada = true;
+
+        // Eliminar el recurso anterior solo después de
+        // confirmar que MySQL guardó la nueva fotografía.
+        eliminarEnSegundoPlano(anterior);
+
+        res.setHeader('Cache-Control', 'no-store');
+
+        return res.json({
+            success: true,
+            foto_perfil_url: nueva.url
+        });
+
+    } catch (error) {
+        if (nueva && !guardada) {
+            await eliminarFotoPerfil(nueva.publicId)
+                .catch((e) => {
+                    console.error(
+                        'No se pudo limpiar foto fallida:',
+                        e
+                    );
+                });
+        }
+
+        return errorServidor(res, 'Subir foto:', error);
+    }
 };
 
+// ============================================================
+// ELIMINAR FOTO DE PERFIL
+// ============================================================
+
 export const borrarFoto = async (req, res) => {
-  try {
-    const [rows] = await sql.query('SELECT foto_perfil_public_id FROM Usuarios WHERE id_usuario = ?', [idDe(req)]);
-    if (!rows.length) return res.status(404).json({ success: false, message: 'Usuario no encontrado' });
-    const anterior = rows[0].foto_perfil_public_id;
-    await sql.query('UPDATE Usuarios SET foto_perfil_url = NULL, foto_perfil_public_id = NULL WHERE id_usuario = ?', [idDe(req)]);
-    if (anterior) eliminarFotoPerfil(anterior).catch(e => console.error('No se eliminó foto:', e));
-    return res.json({ success: true, foto_perfil_url: null });
-  } catch (e) {
-    console.error('Eliminar foto:', e);
-    return res.status(500).json({ success: false, message: 'No se pudo eliminar la foto' });
-  }
+    try {
+        const [usuarios] = await sql.query(
+            `SELECT foto_perfil_public_id
+             FROM Usuarios
+             WHERE id_usuario = ?
+               AND estado_cuenta = 'activo'
+               AND correo_verificado = 1
+             LIMIT 1`,
+            [idDe(req)]
+        );
+
+        if (!usuarios.length) {
+            return res.status(404).json({
+                success: false,
+                message: 'Usuario no encontrado'
+            });
+        }
+
+        const anterior = usuarios[0].foto_perfil_public_id;
+
+        if (!anterior) {
+            return res.json({
+                success: true,
+                foto_perfil_url: null
+            });
+        }
+
+        const [resultado] = await sql.query(
+            `UPDATE Usuarios
+             SET foto_perfil_url = NULL,
+                 foto_perfil_public_id = NULL
+             WHERE id_usuario = ?
+               AND estado_cuenta = 'activo'
+               AND correo_verificado = 1
+               AND foto_perfil_public_id = ?`,
+            [idDe(req), anterior]
+        );
+
+        if (resultado.affectedRows !== 1) {
+            return res.status(409).json({
+                success: false,
+                message:
+                    'La fotografía cambió durante la operación. ' +
+                    'Inténtalo nuevamente.'
+            });
+        }
+
+        eliminarEnSegundoPlano(anterior);
+
+        res.setHeader('Cache-Control', 'no-store');
+
+        return res.json({
+            success: true,
+            foto_perfil_url: null
+        });
+
+    } catch (error) {
+        return errorServidor(res, 'Eliminar foto:', error);
+    }
 };
