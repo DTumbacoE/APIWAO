@@ -254,14 +254,27 @@ export const crearNegocio = async (req, res) => {
 // OBTENER TODOS LOS NEGOCIOS ACTIVOS
 // ============================================================
 
+
 export const obtenerNegocios = async (req, res) => {
     try {
         const [negocios] = await sql.query(
-            `SELECT *
+            `SELECT
+                id_negocio,
+                id_tipo_negocio,
+                nombre,
+                descripcion,
+                ubicacion,
+                tarifa,
+                latitud,
+                longitud,
+                telefono,
+                sitio_web
              FROM Negocios
              WHERE estado = 1
              ORDER BY fecha_registro DESC`
         );
+
+        res.setHeader('Cache-Control', 'no-store');
 
         return res.json(negocios);
 
@@ -270,9 +283,11 @@ export const obtenerNegocios = async (req, res) => {
     }
 };
 
+
 // ============================================================
 // OBTENER NEGOCIO POR ID
 // ============================================================
+
 
 export const obtenerNegocio = async (req, res) => {
     try {
@@ -286,7 +301,17 @@ export const obtenerNegocio = async (req, res) => {
         }
 
         const [negocios] = await sql.query(
-            `SELECT *
+            `SELECT
+                id_negocio,
+                id_tipo_negocio,
+                nombre,
+                descripcion,
+                ubicacion,
+                tarifa,
+                latitud,
+                longitud,
+                telefono,
+                sitio_web
              FROM Negocios
              WHERE id_negocio = ?
                AND estado = 1
@@ -294,12 +319,14 @@ export const obtenerNegocio = async (req, res) => {
             [id_negocio]
         );
 
-        if (negocios.length === 0) {
+        if (!negocios.length) {
             return res.status(404).json({
                 success: false,
                 message: 'Negocio no encontrado'
             });
         }
+
+        res.setHeader('Cache-Control', 'no-store');
 
         return res.json(negocios[0]);
 
