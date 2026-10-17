@@ -1,4 +1,3 @@
-
 import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
 import { v2 as cloudinary } from 'cloudinary';
@@ -118,4 +117,36 @@ export const eliminarFotoPerfil = async (publicId) => {
         resource_type: 'image',
         invalidate: true
     });
+};
+
+// Galería: el archivo llega desde una petición autenticada al backend.
+export const subirImagenGaleria = async (buffer, idNegocio) => {
+    verificarConfiguracion();
+    if (!Buffer.isBuffer(buffer) || !buffer.length || buffer.length > 5 * 1024 * 1024) {
+        throw new Error('Archivo inválido');
+    }
+    if (!Number.isSafeInteger(Number(idNegocio)) || Number(idNegocio) <= 0) {
+        throw new Error('Negocio inválido');
+    }
+    return new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream({
+            folder: `wao/galeria/negocio_${Number(idNegocio)}`,
+            resource_type: 'image', overwrite: false,
+            allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+            transformation: [{ width: 1600, height: 1600, crop: 'limit', quality: 'auto' }]
+        }, (error, result) => {
+            if (error) return reject(error);
+            if (!result?.secure_url || !result?.public_id) return reject(new Error('Respuesta inválida de Cloudinary'));
+            resolve({ url: result.secure_url, publicId: result.public_id });
+        });
+        Readable.from([buffer]).on('error', reject).pipe(stream);
+    });
+};
+
+export const eliminarImagenGaleriaCloudinary = async (publicId) => {
+    verificarConfiguracion();
+    if (typeof publicId !== 'string' || !/^wao\/galeria\/negocio_[0-9]+\/[a-zA-Z0-9_-]+$/.test(publicId)) {
+        throw new Error('Identificador de galería inválido');
+    }
+    return cloudinary.uploader.destroy(publicId, { resource_type: 'image', invalidate: true });
 };

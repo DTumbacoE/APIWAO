@@ -1,3 +1,5 @@
+import { fileTypeFromBuffer } from 'file-type';
+import { subirImagenGaleria, eliminarImagenGaleriaCloudinary } from '../Services/Cloudinary.js';
 
 import { sql } from '../bd.js';
 
@@ -109,6 +111,8 @@ const imagenConNegocio = async (idImagen) => {
 // CREAR IMAGEN
 // =======================
 export const crearImagen = async (req, res) => {
+    return res.status(410).json({success:false,message:'Utiliza la subida autenticada de imágenes'});
+
     try {
         const { id_negocio, url } = req.body || {};
 
@@ -283,6 +287,8 @@ export const obtenerImagenesPorNegocio = async (req, res) => {
 // ACTUALIZAR IMAGEN
 // =======================
 export const actualizarImagen = async (req, res) => {
+    return res.status(410).json({success:false,message:'La sustitución por URL está deshabilitada por seguridad'});
+
     try {
         const { id_imagen } = req.params;
         const { url, id_negocio } = req.body || {};
@@ -412,5 +418,73 @@ export const eliminarImagen = async (req, res) => {
 
     } catch (error) {
         return errorInterno(res, error);
+    }
+};
+
+// Subida y registro seguros en una sola operación autenticada.
+export const subirImagenSegura = async (req, res) => {
+    const idNegocio = Number(req.body?.id_negocio);
+    if (!idValido(idNegocio) || !req.file?.buffer) {
+        return res.status(400).json({ success: false, message: 'Negocio o archivo inválidos' });
+    }
+    const formato = await fileTypeFromBuffer(req.file.buffer);
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(formato?.mime)) {
+        return res.status(415).json({ success: false, message: 'Formato de imagen no permitido' });
+    }
+    let conexion;
+    let subida;
+    try {
+        // La validación previa evita subir archivos de negocios ajenos.
+        if (!await verificarPropiedad(idNegocio, req.usuario)) {
+            return res.status(403).json({ success: false, message: 'No autorizado para este negocio' });
+        }
+        const planPrevio = await obtenerPlanVigente(idNegocio);
+        if (!planPrevio || Number(planPrevio.permite_galeria) !== 1) {
+            return res.status(403).json({ success: false, message: 'Tu plan no permite galería' });
+        }
+        subida = await subirImagenGaleria(req.file.buffer, idNegocio);
+        conexion = await sql.getConnection();
+        await conexion.beginTransaction();
+        // Bloqueo por negocio: serializa la comprobación del cupo entre peticiones concurrentes.
+        const [negocios] = await conexion.query(
+            'SELECT id_negocio FROM Negocios WHERE id_negocio = ? AND id_usuario = ? AND estado = 1 FOR UPDATE',
+            [idNegocio, req.usuario.id_usuario]
+        );
+        if (!negocios.length) {
+            await conexion.rollback();
+            return res.status(403).json({ success: false, message: 'Negocio no autorizado' });
+        }
+        const [planes] = await conexion.query(
+            `SELECT p.max_imagenes, p.permite_galeria FROM Suscripciones s
+             INNER JOIN Planes p ON p.id_plan = s.id_plan
+             WHERE s.id_negocio = ? AND s.estado = 'ACTIVA'
+             AND s.fecha_inicio <= CURRENT_DATE() AND s.fecha_fin >= CURRENT_DATE()
+             ORDER BY s.fecha_fin DESC, s.id_suscripcion DESC LIMIT 1`, [idNegocio]
+        );
+        const plan = planes[0];
+        const [cuenta] = await conexion.query('SELECT COUNT(*) AS total FROM ImagenesNegocios WHERE id_negocio = ?', [idNegocio]);
+        if (!plan || Number(plan.permite_galeria) !== 1 ||
+            !Number.isFinite(Number(plan.max_imagenes)) ||
+            Number(cuenta[0].total) >= Number(plan.max_imagenes)) {
+            await conexion.rollback();
+            return res.status(409).json({ success: false, message: 'Galería no disponible o límite alcanzado' });
+        }
+        const [resultado] = await conexion.query(
+            'INSERT INTO ImagenesNegocios (id_negocio, url) VALUES (?, ?)',
+            [idNegocio, subida.url]
+        );
+        await conexion.commit();
+        subida = null; // El archivo ya pertenece a un registro persistido.
+        return res.status(201).json({ success: true, id_imagen: resultado.insertId, message: 'Imagen subida correctamente' });
+    } catch (error) {
+        if (conexion) { try { await conexion.rollback(); } catch {} }
+        console.error('Fallo al subir imagen de galería:', error?.message);
+        return res.status(500).json({ success: false, message: 'No se pudo registrar la imagen' });
+    } finally {
+        if (conexion) conexion.release();
+        if (subida) {
+            try { await eliminarImagenGaleriaCloudinary(subida.publicId); }
+            catch (e) { console.error('Limpieza pendiente en Cloudinary:', e?.message); }
+        }
     }
 };
